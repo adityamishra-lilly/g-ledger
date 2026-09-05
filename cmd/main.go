@@ -1,10 +1,18 @@
 package main
 
-import "github.com/adityamishra-lilly/g-ledger/internal/server"
+import (
+	"github.com/adityamishra-lilly/g-ledger/config"
+	"github.com/adityamishra-lilly/g-ledger/internal/server"
+)
 
 func main() {
+	// Load configurations
+	config.Parse()
+
+	// Start the server
 	server := &server.Server{
-		Port: 7379,
+		Port: config.Port,
+		Host: config.Host,
 	}
 	server.StartServer()
 }

@@ -9,12 +9,13 @@ import (
 
 type Server struct {
 	Port    int
+	Host    string
 	clients int32
 }
 
 func (server *Server) listen() (net.Listener, error) {
 	log.Printf("Starting the tcp server at port %d", server.Port)
-	listener, err := net.Listen("tcp","0.0.0.0:"+ strconv.Itoa(server.Port))
+	listener, err := net.Listen("tcp",server.Host+":"+ strconv.Itoa(server.Port))
 	
 	if err != nil{
 		return nil, err
@@ -24,10 +25,11 @@ func (server *Server) listen() (net.Listener, error) {
 }
 
 
-func (server *Server) StartServer() {
+func (server *Server) StartServer() error{
 	listener, err := server.listen()
 	if err != nil{
 	 log.Printf("Error starting server: %v", err)
+	 return err
 	}
 
 	defer listener.Close()
@@ -35,6 +37,7 @@ func (server *Server) StartServer() {
 		conn, err := listener.Accept()
 	  if err != nil{
 			log.Printf("Error accepting client: %v", err)
+			return err
 		}
 		server.clients++
 
