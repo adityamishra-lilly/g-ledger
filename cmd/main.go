@@ -25,10 +25,9 @@ func run() error{
 		// Load configurations
 	config.Parse()
 
-	// Start the server
-	server := server.Server{
-		Port: config.Port,
-		Host: config.Host,
+	server := server.NewServer(config.Host, config.Port)
+	if err := server.Listen(); err != nil {
+		return err
 	}
 
 	signalCtx, stop := signal.NotifyContext(

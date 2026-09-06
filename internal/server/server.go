@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -23,24 +24,34 @@ type Server struct {
 	draining atomic.Bool
 }
 
-func (server *Server) listen() (net.Listener, error) {
+
+func NewServer(host string, port int) *Server {
+	return &Server{
+		Host: host,
+		Port: port,
+		conns: make(map[net.Conn]struct{}),
+	}
+}
+
+func (server *Server) Listen() error {
 	log.Printf("Starting the tcp server at port %d", server.Port)
 	listener, err := net.Listen("tcp",server.Host+":"+ strconv.Itoa(server.Port))
 
 	if err != nil{
-		return nil, err
+		return err
 	}
 
 	server.listener = listener
 
-	return server.listener,nil
+	return nil
 }
 
-func (server *Server) registerConnection(conn net.Conn) {
+func (server *Server) getNumberOfConns() int{
 	server.connMu.Lock()
 	defer server.connMu.Unlock()
 
-	server.conns[conn] = struct{}{}
+	return len(server.conns)
+
 }
 
 
@@ -51,18 +62,10 @@ func (server *Server) unregisterConnection(conn net.Conn) {
 	delete(server.conns, conn)
 }
 
-
+// Accept Loop
 func (server *Server) StartServer() error{
-	server.conns = make(map[net.Conn]struct{})
-	listener, err := server.listen()
-	if err != nil{
-	 log.Printf("Error starting server: %v", err)
-	 return err
-	}
-
-	defer listener.Close()
 	for{
-		conn, err := listener.Accept()
+		conn, err := server.listener.Accept()
 	  if err != nil {
 			if server.draining.Load() {
 				log.Println("Server stopped accepting new connections")
@@ -71,9 +74,17 @@ func (server *Server) StartServer() error{
 			log.Printf("Error accepting client: %v", err)
 			return err
 		}
-		server.registerConnection(conn)
+
+		server.connMu.Lock()
+
+		if server.draining.Load() {
+			server.connMu.Unlock()
+			conn.Close()
+			continue
+		}
+		server.conns[conn] = struct{}{}
 		server.clientWg.Add(1)
-		atomic.AddInt32(&server.clients, 1)
+		server.connMu.Unlock()
 
 		log.Println("new client connected with address", conn.RemoteAddr())
 
@@ -86,13 +97,30 @@ func (server *Server) StartServer() error{
 
 }
 
-func readCommand(conn net.Conn) (string, error){
-	conn.SetReadDeadline(time.Now().Add(30* time.Second))
+func (server *Server) setReadDeadline(conn net.Conn) error {
+	server.connMu.Lock()
+	defer server.connMu.Unlock()
+
+	if server.draining.Load() {
+		return errors.New("server is draining")
+	}
+
+	return conn.SetReadDeadline(
+		time.Now().Add(30* time.Second),
+	)
+}
+
+func (server *Server) readCommand(conn net.Conn) (string, error){
+	if err := server.setReadDeadline(conn); err != nil {
+		return "", err
+	}
+
 	buf := make([]byte, 512)
 	n, err := conn.Read(buf)
 	if err != nil{
 		return "", err
 	}
+
 	return string(buf[:n]), nil
 }
 
@@ -106,7 +134,7 @@ func echoCommand(conn net.Conn, cmd string) error{
 func (server *Server) processClients(conn net.Conn) {
 	defer server.closeConnection(conn)
 	for{
-		cmd, err := readCommand(conn)
+		cmd, err := server.readCommand(conn)
 		if err != nil{
 			if server.draining.Load() {
 				log.Printf("connection closed during shutdowm: %v", conn.RemoteAddr())
@@ -128,9 +156,8 @@ func (server *Server) processClients(conn net.Conn) {
 
 func (server *Server) closeConnection(conn net.Conn) {
 	server.unregisterConnection(conn)
-	conn.Close()	
-	atomic.AddInt32(&server.clients, -1)
-	log.Println("client disconnected", conn.RemoteAddr(), "concurrent clients", server.clients)
+	conn.Close()
+	log.Println("client disconnected", conn.RemoteAddr(), "concurrent clients", server.getNumberOfConns())
 }
 
 func (server *Server) setConnDeadline() {
@@ -171,7 +198,7 @@ func (server *Server) Shutdown(ctx context.Context) error {
 	case <- ctx.Done():
 		count := server.forceCloseConnections()
 		log.Printf("Shutdown timeout: forcibly closed %d connections", count)
-		return fmt.Errorf("Shutdown error")
+		return fmt.Errorf("shutdown timed out: %w", ctx.Err())
 	}
 
 
